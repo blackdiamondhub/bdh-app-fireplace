@@ -546,6 +546,9 @@ class PluginTests(SimpleTestCase):
         self.assertLessEqual(spec.memory_mb, 128)
         self.assertEqual([t.title for t in spec.tiles], ["Fireplace"])
         self.assertTrue((ROOT / "static" / spec.tiles[0].icon).exists())
+        self.assertTrue((ROOT / "static" / spec.tiles[0].icon_on).exists())
+        self.assertIn("<animate", (ROOT / "static" / spec.tiles[0].icon_on).read_text())
+        self.assertNotIn("<animate", (ROOT / "static" / spec.tiles[0].icon).read_text())
         self.assertEqual(reverse("fireplace_state"), "/fireplace/api/state/")
 
 

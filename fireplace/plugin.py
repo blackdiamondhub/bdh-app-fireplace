@@ -10,7 +10,9 @@ spec = PluginSpec(
     run_shortcut="fireplace.homepage.run_shortcut",
     tiles=(
         Tile("Fireplace", "fireplace_index", "fireplace/hub/icon.svg", section="lodge",
-             subtitle="Flames, heat, ember bed & top light", order=15),
+             subtitle="Flames, heat, ember bed & top light", order=15,
+             # Animated flames while any fireplace is on (status level ON).
+             icon_on="fireplace/hub/icon-on.svg"),
     ),
     settings=(
         Setting("napoleon_email", "Napoleon email", type=STR, default="",
