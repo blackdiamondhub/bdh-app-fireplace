@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bdh-app-fireplace"
+version = "1.0.0b1"
+description = "Black Diamond Hub app: Napoleon fireplaces through the Napoleon cloud (pynapoleon)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "bdh-sdk>=0.43,<1",
+    "pynapoleon>=0.0.4",
+    "aiohttp>=3.9",
+]
+
+[project.urls]
+Source = "https://github.com/blackdiamondhub/bdh-app-fireplace"
+
+[project.entry-points."blackdiamondhub.plugins"]
+fireplace = "fireplace.plugin:spec"
+
+[tool.setuptools.packages.find]
+include = ["fireplace", "fireplace.*"]
+
+[tool.setuptools.package-data]
+fireplace = [
+    "templates/**/*",
+    "static/**/*",
+    "tests/*.txt",
+]

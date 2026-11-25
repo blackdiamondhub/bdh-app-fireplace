@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Fireplace{% endblock %}
+{% block body_class %}fp-page{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'fireplace/fireplace.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="fp" id="fp"
+     data-state-url="{% url 'fireplace_state' %}"
+     data-act-url="{% url 'fireplace_act' %}"
+     data-assets="{% static 'fireplace/flames' %}"
+     data-csrf="{{ csrf_token }}">
+  <nav class="fp-tabs" id="fp-tabs" hidden></nav>
+  <div class="fp-banner" id="fp-banner" hidden></div>
+  <div class="fp-empty" id="fp-empty"><i class="fas fa-fire"></i><p>Loading…</p></div>
+  <section class="fp-card" id="fp-card" hidden></section>
+  <div class="fp-toast" id="fp-toast" role="status"></div>
+</div>
+<script src="{% static 'fireplace/flames.js' %}"></script>
+<script src="{% static 'fireplace/fireplace-core.js' %}"></script>
+<script src="{% static 'fireplace/fireplace.js' %}"></script>
+{% endblock %}
