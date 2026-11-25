@@ -1,0 +1,93 @@
+<!doctype html><html><head><meta charset="utf-8"><title>flame parity</title>
+<style>body{background:#111;color:#ccc;font:12px monospace} canvas{display:block}</style></head><body>
+<pre id="log"></pre>
+<script src="../../fireplace/static/fireplace/flames.js"></script>
+<script>
+// Renders the original card shader and FlameRenderer with identical state and
+// compares them. Run via collect.py; results are POSTed back as PNG + JSON.
+// Bake frame k of level L corresponds to card time t0(L) + k * speed / 30 (k >= xfade).
+const Q = new URLSearchParams(location.search);
+const W = +(Q.get("w") || 1000), H = Math.round(W / 2.5);
+const ASSETS = Q.get("assets") || "../../fireplace/static/fireplace/flames";
+const ONLY = (Q.get("cases") || "").split(",").filter(Boolean);
+const K = 100;
+const log = (s) => { document.getElementById("log").textContent += s + "\n"; };
+const post = (name, body) => fetch(`/result?name=${name}`, { method: "POST", body });
+
+const CASES = [
+  { name: "l3_logs", model: { power: 1, flame_speed: 3, orange: 3, yellow: 2, ember_on: 1, ember_bri: 3, ember_rgb: [255, 90, 30], top_on: 1, top_rgb: [255, 150, 80] }, media: "logs", clock: 12.3 },
+  { name: "l1_logs_dim", model: { power: 1, flame_speed: 1, orange: 1, yellow: 0, ember_on: 1, ember_bri: 5, ember_rgb: [40, 120, 255], top_on: 0 }, media: "logs", clock: 47.9 },
+  { name: "l5_logs_yellow", model: { power: 1, flame_speed: 5, orange: 1, yellow: 4, ember_on: 0, top_on: 1, top_rgb: [0, 255, 120] }, media: "logs", clock: 3.1 },
+  { name: "l4_crystals_cycle", model: { power: 1, flame_speed: 4, orange: 4, yellow: 4, ember_on: 1, ember_bri: 4, ember_cycle: 1, top_on: 1, top_cycle: 1 }, media: "crystals", clock: 88.8 },
+  { name: "off_embers", model: { power: 0, flame_speed: 3, orange: 2, yellow: 2, ember_on: 1, ember_bri: 5 }, media: "logs", clock: 5 },
+];
+
+function oldRenderer(gl, frag) {
+  const VERT = "attribute vec2 aPos; void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }";
+  const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x);
+    if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VERT)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, frag));
+  gl.bindAttribLocation(p, 0, "aPos"); gl.linkProgram(p); gl.useProgram(p);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const u = (n) => gl.getUniformLocation(p, n);
+  return (T, t, clock, media) => {
+    gl.viewport(0, 0, W, H);
+    gl.uniform2f(u("uRes"), W, H); gl.uniform1f(u("uTime"), t); gl.uniform1f(u("uClock"), clock);
+    gl.uniform1f(u("uOn"), T.on); gl.uniform1f(u("uHeight"), T.height);
+    gl.uniform1f(u("uOrange"), T.orange); gl.uniform1f(u("uYellow"), T.yellow);
+    gl.uniform3fv(u("uEmber"), T.ember); gl.uniform1f(u("uEmberBri"), T.emberBri); gl.uniform1f(u("uEmberCycle"), T.emberCycle);
+    gl.uniform3fv(u("uTop"), T.top); gl.uniform1f(u("uTopCycle"), T.topCycle); gl.uniform1f(u("uMedia"), media === "crystals" ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  };
+}
+const pixels = (gl) => { const px = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px); return px; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  const cvOld = Object.assign(document.createElement("canvas"), { width: W, height: H });
+  const cvNew = Object.assign(document.createElement("canvas"), { width: W, height: H });
+  const glOld = cvOld.getContext("webgl", { preserveDrawingBuffer: true, antialias: false });
+  const drawOld = oldRenderer(glOld, await (await fetch("card.frag")).text());
+  const r = new FlameRenderer(cvNew, { assets: ASSETS, preserve: true });
+  const results = [];
+  for (const c of CASES.filter((x) => !ONLY.length || ONLY.includes(x.name))) {
+    const T = FlameRenderer.targetsFromModel(c.model);
+    r.setMedia(c.media);
+    r.setTargets(T);
+    const t0 = performance.now();
+    while (!r.ready()) {
+      if (performance.now() - t0 > 60000) throw new Error("capture timeout " + JSON.stringify(r.stats));
+      r.step(0.033, [W, H]);
+      await sleep(30);
+    }
+    const lv = r.level, speed = r.fields.back.meta.speed;
+    const t = 10 + 37 * lv + K * speed / 30;
+    r._cur = Object.assign({}, T, { ember: [...T.ember], top: [...T.top], time: t, clock: c.clock });
+    r.fields.back.pos = K; r.fields.front.pos = K;
+    r.step(0, [W, H]);
+    drawOld(T, t, c.clock, c.media);
+    const a = pixels(glOld), b = pixels(r.gl);
+    let se = 0, mx = 0, n = 0, over3 = 0;
+    const diff = new ImageData(W, H);
+    for (let i = 0; i < a.length; i += 4) {
+      let pm = 0;
+      for (let ch = 0; ch < 3; ch++) { const d = a[i + ch] - b[i + ch]; se += d * d; pm = Math.max(pm, Math.abs(d)); n++; }
+      mx = Math.max(mx, pm); if (pm > 3) over3++;
+      const row = H - 1 - Math.floor(i / 4 / W), col = (i / 4) % W, o = (row * W + col) * 4;
+      diff.data[o] = diff.data[o + 1] = diff.data[o + 2] = Math.min(255, pm * 8); diff.data[o + 3] = 255;
+    }
+    const psnr = 10 * Math.log10(255 * 255 / (se / n));
+    const res = { case: c.name, level: lv, t: +t.toFixed(3), psnr: +psnr.toFixed(2), maxDiff: mx, pctOver3: +(100 * over3 / (W * H)).toFixed(3), bakeMs: r.stats.bakeMs };
+    results.push(res); log(JSON.stringify(res));
+    const out = Object.assign(document.createElement("canvas"), { width: W, height: H * 3 });
+    const ctx = out.getContext("2d");
+    ctx.drawImage(cvOld, 0, 0); ctx.drawImage(cvNew, 0, H); ctx.putImageData(diff, 0, 2 * H);
+    ctx.fillStyle = "#fff"; ctx.font = "16px monospace";
+    ctx.fillText("card shader", 8, 20); ctx.fillText("FlameRenderer", 8, H + 20); ctx.fillText(`|diff| x8  psnr ${res.psnr}`, 8, 2 * H + 20);
+    await post(`${c.name}.png`, out.toDataURL("image/png"));
+  }
+  await post("results.json", JSON.stringify(results, null, 1));
+}
+main().catch((e) => post("error.txt", String(e && e.stack || e)));
+</script></body></html>
