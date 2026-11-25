@@ -27,6 +27,8 @@ fireplaces shows a friendly empty state.
 - Shortcut: "Fireplaces off" (or "Fireplace off" with a single fireplace) appears only while one
   is lit. It turns off just the lit ones. If none are lit by the time it runs, it answers
   "Fireplaces are already off". This behaviour moved here from the Controls app.
+- Tile icon: animated flames (`hub/icon-on.svg`, SVG SMIL) while a fireplace is on, and an
+  empty firebox (`hub/icon.svg`) otherwise. Needs a hub with `Tile.icon_on` support.
 
 ## How it works
 
