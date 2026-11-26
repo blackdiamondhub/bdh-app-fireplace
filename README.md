@@ -9,6 +9,14 @@ flame levels, ember bed colour and brightness, top light colour, and the eco/boo
 toggles. Each fireplace on the account gets a card, with tabs when there is more than one. Logs or
 crystals media is remembered per fireplace in the browser.
 
+### Your own presets
+
+"Save preset" stores the current flame height, orange/yellow levels, ember bed and top light
+(never the heater, eco or boost) under a name, up to 8 per folder. Presets live on the hub, so
+every screen sees them and any fireplace can use them. Owners (owner mode, or hub admins) save
+house presets. Guests see the house presets but can't change them; they save into a separate
+guest folder, and guest presets are deleted 14 days after they were last saved.
+
 ## Settings
 
 | Key | Type | |

@@ -93,7 +93,8 @@ test('every action the page sends is one the server accepts and the card handles
 test('every Font Awesome icon used exists in the hub (6.0.0-beta3, solid)', () => {
   // Checked against the hub's FA build; extend when adding icons.
   const known = new Set(['fa-fire', 'fa-power-off', 'fa-temperature-half', 'fa-lightbulb', 'fa-braille', 'fa-tree',
-    'fa-gem', 'fa-gear', 'fa-triangle-exclamation', 'fa-champagne-glasses', 'fa-campground', 'fa-sun', 'fa-cloud-sun']);
+    'fa-gem', 'fa-gear', 'fa-triangle-exclamation', 'fa-champagne-glasses', 'fa-campground', 'fa-sun', 'fa-cloud-sun',
+    'fa-plus', 'fa-star', 'fa-xmark']);
   const used = new Set([...(js + coreSrc + html).matchAll(/"(fa-[a-z-]+)"|ICON\("(fa-[a-z-]+)"\)|fas (fa-[a-z-]+)/g)]
     .map((m) => m[1] || m[2] || m[3]));
   for (const i of used) assert.ok(known.has(i), i);

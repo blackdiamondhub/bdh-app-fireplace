@@ -15,6 +15,8 @@
   ];
   const SWATCHES = ["#ff5a1e", "#ff2a00", "#ffb020", "#ffffff", "#3a7bff", "#00c8ff", "#b040ff", "#30e070"];
   const MEDIA = ["logs", "crystals"];
+  // What a saved look holds: the flame and lights, never the heater (service.LOOK_FIELDS).
+  const LOOK_KEYS = ["flame_speed", "orange", "yellow", "ember_cycle", "ember_rgb", "ember_bri", "top_cycle", "top_rgb"];
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const hexToRgb = (hex) => {
@@ -159,6 +161,16 @@
           if (!m.power) this._optimistic("power", true);
           this._call("favourite", value);
           break;
+        case "look": {
+          // value is a saved look {id, name, look}; the server sets whatever differs.
+          const l = value.look;
+          for (const k of LOOK_KEYS) if (l[k] != null) this._optimistic(k, l[k]);
+          this._optimistic("ember_on", l.ember_bri > 0);
+          this._optimistic("top_on", !!(l.top_rgb && l.top_rgb.some((c) => c > 0)));
+          if (!m.power) this._optimistic("power", true);
+          this._call("look", value.id);
+          break;
+        }
         default:
           return;
       }
@@ -166,8 +178,21 @@
     }
   }
 
-  const api = { CardState, PENDING_MS, EMBER_MAX, PRESETS, SWATCHES, MEDIA, clamp, hexToRgb, rgbToHex, sameVal,
-    rendererModel, statusText };
+  // Is the fireplace showing this saved look right now? (A dark top light is off whatever its colour.)
+  function lookMatches(m, look) {
+    if (!m.power || !look) return false;
+    const dark = (rgb) => !rgb || !rgb.some((c) => c > 0);
+    return LOOK_KEYS.every((k) => {
+      if (look[k] == null) return true;
+      if (k === "top_rgb") return dark(look.top_rgb) ? !m.top_on : !!m.top_on && sameVal(m.top_rgb, look.top_rgb);
+      // A cycling light's colour keeps changing, so it doesn't count.
+      if (k === "ember_rgb" && (look.ember_cycle || !look.ember_bri)) return true;
+      return sameVal(m[k], look[k]);
+    });
+  }
+
+  const api = { CardState, PENDING_MS, EMBER_MAX, PRESETS, SWATCHES, MEDIA, LOOK_KEYS, clamp, hexToRgb, rgbToHex,
+    sameVal, rendererModel, statusText, lookMatches };
   root.FireplaceCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

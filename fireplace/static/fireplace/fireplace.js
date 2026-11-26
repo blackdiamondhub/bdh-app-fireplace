@@ -4,12 +4,14 @@
  */
 (function () {
   "use strict";
-  const { CardState, PRESETS, SWATCHES, MEDIA, hexToRgb, rgbToHex, rendererModel, statusText } = window.FireplaceCore;
+  const { CardState, PRESETS, SWATCHES, MEDIA, hexToRgb, rgbToHex, rendererModel, statusText, lookMatches } =
+    window.FireplaceCore;
 
   const root = document.getElementById("fp");
   if (!root) return;
   const STATE_URL = root.dataset.stateUrl;
   const ACT_URL = root.dataset.actUrl;
+  const LOOKS_URL = root.dataset.looksUrl;
   const ASSETS = root.dataset.assets.replace(/\/$/, "");
   const CSRF = root.dataset.csrf;
   const DEBUG = /[?&]fpdebug=1\b/.test(location.search);
@@ -36,17 +38,34 @@
     toastTimer = setTimeout(() => toastEl.classList.remove("fp-show"), 5000);
   }
 
-  async function post(id, action, value) {
-    const r = await fetch(ACT_URL, {
+  async function postJson(url, payload) {
+    const r = await fetch(url, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
-      body: JSON.stringify({ id, action, value }),
+      body: JSON.stringify(payload),
     });
     let body = {};
     try { body = await r.json(); } catch (e) { /* not JSON */ }
     if (!r.ok) throw new Error(body.error || `Fireplace didn't respond (${r.status})`);
-    return body.fireplace;
+    return body;
+  }
+
+  async function post(id, action, value) {
+    return (await postJson(ACT_URL, { id, action, value })).fireplace;
+  }
+
+  // Your own presets: saved on the hub, so every screen has them.
+  async function looksOp(payload) {
+    try {
+      data.looks = (await postJson(LOOKS_URL, payload)).looks;
+      return true;
+    } catch (e) {
+      toast(e.message || String(e));
+      return false;
+    } finally {
+      if (ui) { ui.looksSig = null; render(); }
+    }
   }
 
   function cardFor(dsn) {
@@ -120,7 +139,16 @@
       </div>
       <div class="fp-presets">
         ${PRESETS.map((p) => `<button type="button" data-fav="${p.option}">${ICON(p.icon)}${p.name}</button>`).join("")}
-      </div>`;
+        <span class="fp-mine"></span>
+        <button type="button" class="fp-add" title="Save the flame and lights as a preset">${ICON("fa-plus")}Save preset</button>
+      </div>
+      <form class="fp-save" hidden>
+        <span class="fp-rl">Save as</span>
+        <input type="text" maxlength="24" placeholder="Preset name" aria-label="Preset name" autocomplete="off">
+        <button type="submit" class="fp-ok">Save</button>
+        <button type="button" class="fp-no">Cancel</button>
+        <small>Saves the flame, ember bed and top light. Not the heater.</small>
+      </form>`;
 
     const $ = (q) => cardEl.querySelector(q);
     const $$ = (q) => cardEl.querySelectorAll(q);
@@ -161,6 +189,42 @@
       wrap.querySelector("input").addEventListener("input", (e) => act(key, hexToRgb(e.target.value)));
     });
     $$("[data-fav]").forEach((b) => b.addEventListener("click", () => act("favourite", b.dataset.fav)));
+    ui.mine = $(".fp-mine");
+    ui.add = $(".fp-add");
+    ui.save = $(".fp-save");
+    ui.saveName = ui.save.querySelector("input");
+    ui.saveNote = ui.save.querySelector("small");
+    ui.add.addEventListener("click", () => {
+      ui.save.hidden = !ui.save.hidden;
+      if (!ui.save.hidden) ui.saveName.value = "";
+    });
+    ui.save.querySelector(".fp-no").addEventListener("click", () => (ui.save.hidden = true));
+    ui.save.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = ui.saveName.value.trim();
+      if (!name) return toast("Give the preset a name");
+      if (await looksOp({ op: "save", id: dsn, name })) ui.save.hidden = true;
+    });
+    // Tap a preset to use it; tap its x, then "Delete?", to remove it.
+    ui.mine.addEventListener("click", (e) => {
+      const del = e.target.closest("[data-del]");
+      const b = e.target.closest("[data-look]");
+      if (!b) return;
+      if (del) {
+        if (!b.classList.contains("fp-confirm")) {
+          ui.mine.querySelectorAll(".fp-confirm").forEach((x) => x.classList.remove("fp-confirm"));
+          b.classList.add("fp-confirm");
+          clearTimeout(ui.confirmTimer);
+          ui.confirmTimer = setTimeout(() => b.classList.remove("fp-confirm"), 4000);
+        } else {
+          looksOp({ op: "delete", look: b.dataset.look });
+        }
+        return;
+      }
+      if (b.classList.contains("fp-confirm")) return b.classList.remove("fp-confirm");
+      const look = (data.looks || []).find((l) => l.id === b.dataset.look);
+      if (look) act("look", look);
+    });
 
     try {
       ui.renderer = new window.FlameRenderer(ui.canvas, { assets: ASSETS, media: mediaFor(dsn), scale: 0.8, maxFps: 30 });
@@ -174,6 +238,7 @@
     if (!ui) return;
     if (ui.renderer) ui.renderer.destroy();
     if (ui.debug) clearInterval(ui.debug.timer);
+    clearTimeout(ui.confirmTimer);
     ui = null;
     cardEl.innerHTML = "";
   }
@@ -229,10 +294,36 @@
       const ci = w.querySelector("input");
       if (hex && document.activeElement !== ci) ci.value = hex;
     });
-    cardEl.querySelectorAll("[data-fav]").forEach((b) => {
-      b.classList.toggle("fp-act", !!m.power && m.favourite === b.dataset.fav);
+    const looks = data.looks || [];
+    const sig = JSON.stringify(looks.map((l) => [l.id, l.name, !!l.mine, l.expires || 0]));
+    if (ui.looksSig !== sig) {
+      ui.looksSig = sig;
+      ui.mine.innerHTML = looks.map((l) =>
+        `<button type="button" data-look="${l.id}">${ICON("fa-star")}<span class="fp-ln"></span>` +
+        (l.mine ? `<span class="fp-del" data-del title="Delete">${ICON("fa-xmark")}</span>` : "") + "</button>").join("");
+      ui.mine.querySelectorAll("[data-look]").forEach((b, i) => {
+        b.querySelector(".fp-ln").textContent = looks[i].name;
+        if (looks[i].expires) b.title = `Guest preset, kept until ${new Date(looks[i].expires * 1000).toLocaleDateString()}`;
+      });
+      ui.saveNote.textContent = data.guest
+        ? "Saves the flame, ember bed and top light (not the heater) for 2 weeks."
+        : "Saves the flame, ember bed and top light. Not the heater.";
+    }
+    const mine = looks.find((l) => lookMatches(m, l.look));
+    ui.mine.querySelectorAll("[data-look]").forEach((b) => {
+      b.classList.toggle("fp-act", !!mine && mine.id === b.dataset.look);
       b.disabled = !m.available;
     });
+    // Your preset showing wins over the built-in one the fireplace still reports.
+    cardEl.querySelectorAll("[data-fav]").forEach((b) => {
+      b.classList.toggle("fp-act", !mine && !!m.power && m.favourite === b.dataset.fav);
+      b.disabled = !m.available;
+    });
+    const full = looks.filter((l) => l.mine).length >= 8;
+    ui.add.disabled = !m.power || !m.available || full;
+    ui.add.title = full ? "8 presets saved: delete one first"
+      : m.power ? "Save the flame and lights as a preset" : "Turn the fireplace on first";
+    if (ui.add.disabled) ui.save.hidden = true;
 
     if (ui.renderer) {
       ui.renderer.setModel(rendererModel(m));

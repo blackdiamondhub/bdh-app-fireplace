@@ -158,7 +158,8 @@ class CloudTests(Fresh, SimpleTestCase):
     def test_missing_credentials(self):
         secrets.delete("napoleon_password", app="fireplace")
         self.assertFalse(cloud.configured())
-        self.assertEqual(service.state(), {"configured": False, "error": None, "fireplaces": []})
+        self.assertEqual(service.state(), {"configured": False, "error": None, "fireplaces": [], "looks": [],
+                                           "guest": False})
         with self.assertRaises(cloud.NotConfigured):
             service.act(LIVING, "power", False)
         self.assertEqual(self.logins, [])
@@ -255,7 +256,8 @@ class StateTests(Fresh, SimpleTestCase):
 
     def test_zero_fireplaces(self):
         self.client.fps.clear()
-        self.assertEqual(service.state(), {"configured": True, "error": None, "fireplaces": []})
+        self.assertEqual(service.state(), {"configured": True, "error": None, "fireplaces": [], "looks": [],
+                                           "guest": False})
         self.assertIsNone(homepage.status())
         self.assertEqual(homepage.shortcuts(), [])
 
@@ -397,6 +399,145 @@ class ActionTests(Fresh, SimpleTestCase):
             service.act(LIVING, "flame_speed", 2)
 
 
+class LookTests(Fresh, SimpleTestCase):
+    """Your own presets: the flame and lights, saved and re-applied, never the heater."""
+
+    def setUp(self):
+        super().setUp()
+        service.state()
+        self.living.cloud = lit_state(flame_speed=5, orange_flame=4, yellow_flame=1, heater=2, setpoint_c=23,
+                                      eco_mode=True, ember_bed_rgb=(0, 200, 255), ember_bed_brightness=2,
+                                      top_light_rgb=(255, 0, 128), top_light_cycling=True)
+        service.state(max_age=0)
+
+    def apply(self, name, fp=None):
+        fp = fp or self.living
+        look = next(s for s in service.looks(guest=True) if s["name"] == name)
+        fp.calls.clear()
+        service.act(fp.dsn, "look", look["id"])
+        return fp.calls
+
+    def test_save_keeps_the_flame_and_lights_but_not_the_heater(self):
+        saved = service.save_look(LIVING, "  Cozy   blue ")
+        self.assertEqual([s["name"] for s in saved], ["Cozy blue"])
+        self.assertEqual(saved[0]["look"], {
+            "flame_speed": 5, "orange": 4, "yellow": 1, "ember_cycle": False, "ember_rgb": [0, 200, 255],
+            "ember_bri": 2, "top_cycle": True, "top_rgb": [255, 0, 128]})
+        self.assertEqual(service.state()["looks"], saved)  # every screen gets them with the state
+
+    def test_applying_sets_only_what_differs_and_never_the_heater(self):
+        service.save_look(LIVING, "Cozy")
+        self.living.cloud = lit_state(heater=1, setpoint_c=19, flame_speed=5, ember_bed_cycling=True)
+        self.tick(service.PENDING_S + 1)
+        service.state(max_age=0)
+        self.assertEqual(self.apply("Cozy"), [
+            ("set_orange_flame", 4), ("set_yellow_flame", 1), ("set_ember_bed_cycling", False),
+            ("set_ember_bed_rgb", (0, 200, 255)), ("set_ember_bed_brightness", 2),
+            ("set_top_light_cycling", True), ("set_top_light_rgb", (255, 0, 128))])
+        m = self.fp()["model"]
+        self.assertEqual((m["heater"], m["setpoint"], m["orange"], m["top_rgb"]), (1, 19, 4, [255, 0, 128]))
+        self.assertEqual(self.apply("Cozy"), [])  # already showing: no cloud calls
+
+    def test_applying_to_an_off_fireplace_turns_it_on_first(self):
+        service.save_look(LIVING, "Cozy")
+        calls = self.apply("Cozy", self.den)
+        self.assertEqual(calls[0], ("set_power", True))
+        self.assertNotIn("set_heater", [c for c, _ in calls])
+
+    def test_a_dark_top_light_is_saved_as_off(self):
+        self.living.cloud.top_light_rgb = None
+        self.tick(service.PENDING_S + 1)
+        service.state(max_age=0)
+        self.assertEqual(service.save_look(LIVING, "Dim")[0]["look"]["top_rgb"], [0, 0, 0])
+
+    def test_same_name_replaces_and_there_is_a_limit(self):
+        first = service.save_look(LIVING, "Cozy")[0]
+        self.living.cloud.flame_speed = 1
+        self.tick(service.PENDING_S + 1)
+        service.state(max_age=0)
+        again = service.save_look(LIVING, "COZY")
+        self.assertEqual([(s["id"], s["name"], s["look"]["flame_speed"]) for s in again], [(first["id"], "COZY", 1)])
+        for n in range(service.MAX_LOOKS - 1):
+            service.save_look(LIVING, f"Look {n}")
+        with self.assertRaises(service.Invalid):
+            service.save_look(LIVING, "One too many")
+        service.save_look(LIVING, "Look 0")  # replacing still works when full
+
+    def test_save_rules(self):
+        for name in ("", "   ", None, 5, "x" * (service.MAX_LOOK_NAME + 1), "party time"):
+            with self.subTest(name=name), self.assertRaises(service.Invalid):
+                service.save_look(LIVING, name)
+        with self.assertRaises(service.IsOff):
+            service.save_look(DEN, "Off")
+        with self.assertRaises(service.NotFound):
+            service.save_look("AC000W999999999", "Gone")
+        self.assertEqual(service.looks(), [])
+
+    def test_delete(self):
+        look = service.save_look(LIVING, "Cozy")[0]
+        self.assertEqual(service.delete_look(look["id"]), [])
+        with self.assertRaises(service.NotFound):
+            service.delete_look(look["id"])
+        with self.assertRaises(service.Invalid):
+            service.act(LIVING, "look", look["id"])  # deleted on another screen meanwhile
+
+    def test_malformed_stored_looks_are_skipped(self):
+        service.save_look(LIVING, "Cozy")
+        self.broker.state[("fireplace", service.LOOKS_KEY)].append({"id": "x", "name": "Bad", "look": {"flame_speed": 9}})
+        self.assertEqual([s["name"] for s in service.looks()], ["Cozy"])
+        with self.assertRaises(service.Invalid):
+            service.act(LIVING, "look", "x")
+
+    def test_guests_save_apart_and_see_the_house_presets_read_only(self):
+        house = service.save_look(LIVING, "Cozy")[0]
+        self.assertTrue(house["mine"])
+        saved = service.save_look(LIVING, "Ours", guest=True)
+        self.assertEqual([(s["name"], s["mine"]) for s in saved], [("Cozy", False), ("Ours", True)])
+        self.assertEqual(saved[1]["expires"], int(service.wall()) + service.GUEST_LOOK_DAYS * 86400)
+        self.assertEqual(len(self.broker.state[("fireplace", service.GUEST_LOOKS_KEY)]), 1)
+        self.assertEqual([s["name"] for s in service.looks()], ["Cozy"])  # owners don't see them
+        self.assertEqual(service.state(guest=True)["looks"], saved)
+        self.assertTrue(service.state(guest=True)["guest"])
+        with self.assertRaises(service.Invalid):
+            service.save_look(LIVING, "cozy", guest=True)  # a house name
+        with self.assertRaises(service.NotFound):
+            service.delete_look(house["id"], guest=True)  # guests can't delete house presets
+        with self.assertRaises(service.NotFound):
+            service.delete_look(saved[1]["id"])  # nor owners guest ones (they expire)
+        self.assertEqual(self.apply("Ours", self.den)[0], ("set_power", True))  # any screen can use them
+        self.assertEqual(service.delete_look(saved[1]["id"], guest=True), service.looks(True)[:1])
+
+    def test_guest_presets_go_after_two_weeks(self):
+        now = [1_800_000_000.0]
+        with patch.object(service, "wall", lambda: now[0]):
+            old = service.save_look(LIVING, "Old", guest=True)[-1]
+            now[0] += 86400
+            service.save_look(LIVING, "Newer", guest=True)
+            now[0] += service.GUEST_LOOK_DAYS * 86400 - 86400 + 1
+            self.assertEqual([s["name"] for s in service.looks(True)], ["Newer"])
+            with self.assertRaises(service.Invalid):
+                service.act(LIVING, "look", old["id"])
+            now[0] += 86400
+            service.prune_guest_looks()
+            self.assertEqual(self.broker.state[("fireplace", service.GUEST_LOOKS_KEY)], [])
+
+    def test_resaving_a_guest_preset_keeps_it_longer(self):
+        now = [1_800_000_000.0]
+        with patch.object(service, "wall", lambda: now[0]):
+            first = service.save_look(LIVING, "Ours", guest=True)[0]
+            now[0] += 10 * 86400
+            again = service.save_look(LIVING, "Ours", guest=True)[0]
+            self.assertEqual((again["id"], again["expires"]), (first["id"], first["expires"] + 10 * 86400))
+
+    def test_the_worker_prunes_guest_presets_hourly(self):
+        with patch.object(service, "prune_guest_looks") as prune, patch.object(worker, "_pruned_at", None):
+            worker.prune()
+            worker.prune()
+            self.tick(worker.PRUNE_EVERY)
+            worker.prune()
+        self.assertEqual(prune.call_count, 2)
+
+
 class HomepageTests(Fresh, TestCase):
     def test_status(self):
         s = homepage.status()
@@ -501,6 +642,48 @@ class ViewTests(Fresh, TestCase):
         self.assertEqual(r.status_code, 403)
         self.assertEqual(self.client_.get(reverse("fireplace_act")).status_code, 405)
         self.assertEqual(self.living.calls, [])
+
+    def test_looks(self):
+        service.state()
+        url = reverse("fireplace_looks")
+        post = lambda body, c=None: (c or self.client_).post(url, json.dumps(body), content_type="application/json")
+        r = post({"op": "save", "id": LIVING, "name": "Cozy"})
+        self.assertEqual(r.status_code, 200)
+        look = r.json()["looks"][0]
+        self.assertEqual(look["name"], "Cozy")
+        self.assertEqual(self.client_.get(reverse("fireplace_state")).json()["looks"], [look])
+        r = self.post({"id": DEN, "action": "look", "value": look["id"]})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["fireplace"]["model"]["power"])
+        for body, code in (({"op": "save", "id": DEN, "name": ""}, 400), ({"op": "nope"}, 400),
+                           ({"op": "delete", "look": "missing"}, 404)):
+            with self.subTest(body=body):
+                self.assertEqual(post(body).status_code, code)
+        self.assertEqual(post({"op": "delete", "look": look["id"]}, Client(enforce_csrf_checks=True)).status_code, 403)
+        self.assertEqual(post({"op": "delete", "look": look["id"]}).json(), {"looks": []})
+        self.assertEqual(self.client_.get(url).status_code, 405)
+
+    def test_owners_save_house_presets_and_everyone_else_guest_ones(self):
+        service.state()
+        url = reverse("fireplace_looks")
+        post = lambda body: self.client_.post(url, json.dumps(body), content_type="application/json")
+        self.assertIn("expires", post({"op": "save", "id": LIVING, "name": "Guest"}).json()["looks"][0])
+        with patch("fireplace.views._is_guest", return_value=False):
+            looks = post({"op": "save", "id": LIVING, "name": "House"}).json()["looks"]
+            self.assertEqual([(s["name"], s["mine"]) for s in looks], [("House", True)])
+            self.assertFalse(self.client_.get(reverse("fireplace_state")).json()["guest"])
+        state = self.client_.get(reverse("fireplace_state")).json()
+        self.assertEqual(([s["name"] for s in state["looks"]], state["guest"]), (["House", "Guest"], True))
+
+    def test_who_counts_as_a_guest(self):
+        from types import SimpleNamespace as NS
+
+        from fireplace.views import _is_guest
+        staff, plain = NS(is_staff=True), NS(is_staff=False)
+        self.assertTrue(_is_guest(NS()))  # no identity at all
+        self.assertTrue(_is_guest(NS(bdh_mode="guest", user=plain)))
+        self.assertFalse(_is_guest(NS(bdh_mode="owner", user=plain)))
+        self.assertFalse(_is_guest(NS(bdh_mode="guest", user=staff)))
 
 
 class WorkerTests(Fresh, SimpleTestCase):

@@ -185,3 +185,34 @@ test('unknown actions do nothing', () => {
   assert.deepEqual(h.sent, []);
   assert.equal(h.changes, 0);
 });
+
+const COZY = { id: 'a1b2', name: 'Cozy', look: {
+  flame_speed: 5, orange: 4, yellow: 1, ember_cycle: false, ember_rgb: [0, 200, 255], ember_bri: 2,
+  top_cycle: false, top_rgb: [255, 0, 128] } };
+
+test('a saved preset shows at once, powers on and sends only its id', () => {
+  const h = harness({ power: false, heater: 2, ember_on: false, ember_bri: 0 });
+  h.card.act('look', COZY);
+  const m = h.card.model();
+  assert.deepEqual([m.power, m.flame_speed, m.orange, m.ember_bri, m.ember_on, m.top_on, m.top_rgb],
+    [true, 5, 4, 2, true, true, [255, 0, 128]]);
+  assert.equal(m.heater, 2); // a preset never touches the heater
+  assert.deepEqual(h.sent, [['look', 'a1b2']]);
+  assert.ok(core.lookMatches(m, COZY.look));
+});
+
+test('which saved preset is showing', () => {
+  const showing = model({ flame_speed: 5, orange: 4, yellow: 1, ember_rgb: [0, 200, 255], ember_bri: 2,
+    top_on: true, top_rgb: [255, 0, 128], heater: 2, setpoint: 19 });
+  assert.ok(core.lookMatches(showing, COZY.look));
+  assert.ok(!core.lookMatches(Object.assign({}, showing, { power: false }), COZY.look));
+  assert.ok(!core.lookMatches(Object.assign({}, showing, { yellow: 2 }), COZY.look));
+  assert.ok(!core.lookMatches(Object.assign({}, showing, { top_on: false }), COZY.look));
+  // A dark top light is "off" whatever colour the fireplace remembers.
+  const dark = Object.assign({}, COZY.look, { top_rgb: [0, 0, 0] });
+  assert.ok(core.lookMatches(Object.assign({}, showing, { top_on: false, top_rgb: [9, 9, 9] }), dark));
+  assert.ok(!core.lookMatches(showing, dark));
+  // A cycling ember bed's colour keeps changing, so it doesn't count.
+  const cycling = Object.assign({}, COZY.look, { ember_cycle: true });
+  assert.ok(core.lookMatches(Object.assign({}, showing, { ember_cycle: true, ember_rgb: [1, 2, 3] }), cycling));
+});

@@ -21,19 +21,54 @@ def index(request):
     return render(request, "fireplace/index.html", {})
 
 
+def _is_guest(request):
+    """Owners (and admins) manage the house presets; everyone else is a guest.
+    No identity (a request that skipped the hub) counts as a guest."""
+    user = getattr(request, "user", None)
+    return getattr(request, "bdh_mode", "guest") != "owner" and not getattr(user, "is_staff", False)
+
+
 @require_GET
 def api_state(request):
     service.note_viewer()
-    return JsonResponse(service.state(max_age=service.FAST_POLL))
+    return JsonResponse(service.state(max_age=service.FAST_POLL, guest=_is_guest(request)))
+
+
+def _body(request):
+    try:
+        data = json.loads(request.body or b"{}")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+@require_POST
+def api_looks(request):
+    """Save the current look of fireplace ``id`` as ``name``, or delete preset ``look``."""
+    data = _body(request)
+    if data is None:
+        return _error("Expected a JSON object")
+    guest = _is_guest(request)
+    try:
+        if data.get("op") == "save":
+            saved = service.save_look(data.get("id"), data.get("name"), guest=guest)
+        elif data.get("op") == "delete":
+            saved = service.delete_look(data.get("look"), guest=guest)
+        else:
+            return _error("Unknown op")
+    except service.Invalid as exc:
+        return _error(exc, 400)
+    except service.NotFound as exc:
+        return _error(exc, 404)
+    except service.IsOff as exc:
+        return _error(exc, 409)
+    return JsonResponse({"looks": saved})
 
 
 @require_POST
 def api_act(request):
-    try:
-        data = json.loads(request.body or b"{}")
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
+    data = _body(request)
+    if data is None:
         return _error("Expected a JSON object")
     service.note_viewer()
     try:
