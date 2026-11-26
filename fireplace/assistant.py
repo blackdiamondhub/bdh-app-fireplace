@@ -56,8 +56,10 @@ def _is_guest(mode) -> bool:
 def _fireplace_param(fireplaces):
     names = list(dict.fromkeys(f["name"] for f in fireplaces))
     param = {"type": "string",
-             "description": "Which fireplace, by name. Leave it out to mean all of them for "
-                            "get_status and turning off; otherwise ask the guest which one."}
+             "description": "Which fireplace. Map the guest's words (a room, 'the main one', 'the one "
+                            "here', 'the big room') to one of these names using what you know about "
+                            "the house and this screen. If it could be either, ask which one before "
+                            "acting. Leave it out to mean all of them for get_status and turning off."}
     if 0 < len(names) <= MAX_ENUM:
         param["enum"] = names
     return param
