@@ -331,7 +331,7 @@ def fireplaces() -> list[dict]:
 def state(max_age: float = FAST_POLL, guest: bool = False) -> dict:
     """``{configured, error, fireplaces, looks}``, polling first if the snapshot is stale."""
     if not cloud.configured():
-        return {"configured": False, "error": None, "fireplaces": [], "looks": []}
+        return {"configured": False, "error": None, "fireplaces": [], "looks": [], "guest": guest}
     ensure_fresh(max_age)
     with _lock:
         err = _error

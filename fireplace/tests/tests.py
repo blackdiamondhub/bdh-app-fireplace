@@ -158,7 +158,8 @@ class CloudTests(Fresh, SimpleTestCase):
     def test_missing_credentials(self):
         secrets.delete("napoleon_password", app="fireplace")
         self.assertFalse(cloud.configured())
-        self.assertEqual(service.state(), {"configured": False, "error": None, "fireplaces": []})
+        self.assertEqual(service.state(), {"configured": False, "error": None, "fireplaces": [], "looks": [],
+                                           "guest": False})
         with self.assertRaises(cloud.NotConfigured):
             service.act(LIVING, "power", False)
         self.assertEqual(self.logins, [])
@@ -255,7 +256,8 @@ class StateTests(Fresh, SimpleTestCase):
 
     def test_zero_fireplaces(self):
         self.client.fps.clear()
-        self.assertEqual(service.state(), {"configured": True, "error": None, "fireplaces": []})
+        self.assertEqual(service.state(), {"configured": True, "error": None, "fireplaces": [], "looks": [],
+                                           "guest": False})
         self.assertIsNone(homepage.status())
         self.assertEqual(homepage.shortcuts(), [])
 
@@ -410,7 +412,7 @@ class LookTests(Fresh, SimpleTestCase):
 
     def apply(self, name, fp=None):
         fp = fp or self.living
-        look = next(s for s in service.looks() if s["name"] == name)
+        look = next(s for s in service.looks(guest=True) if s["name"] == name)
         fp.calls.clear()
         service.act(fp.dsn, "look", look["id"])
         return fp.calls
