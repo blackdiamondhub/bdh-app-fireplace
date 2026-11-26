@@ -160,7 +160,10 @@ def tools(mode=None):
 # ── speech ──
 
 def _label(f, many: bool) -> str:
-    return f"the {f['name']} fireplace" if many else "the fireplace"
+    if not many:
+        return "the fireplace"
+    name = f["name"]
+    return f"the {name}" if name.casefold().endswith("fireplace") else f"the {name} fireplace"
 
 
 def _cap(text: str) -> str:
@@ -225,12 +228,17 @@ def _state(mode):
     return data
 
 
-def _match(fireplaces, wanted):
-    key = " ".join(wanted.split()).casefold()
+def _norm(name):
+    key = " ".join(name.split()).casefold().removeprefix("the ")
     for suffix in (" fireplace", " fire"):
         key = key.removesuffix(suffix)
-    key = key.removeprefix("the ")
-    return next((f for f in fireplaces if f["name"].casefold() == key), None)
+    return key
+
+
+def _match(fireplaces, wanted):
+    # Normalise both sides: a device may itself be named "Living Room Fireplace".
+    key = _norm(wanted)
+    return next((f for f in fireplaces if _norm(f["name"]) == key), None)
 
 
 def _targets(fireplaces, wanted, *, all_ok=False):
