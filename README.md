@@ -67,6 +67,30 @@ fireplaces shows a friendly empty state.
 - **Memory.** The SDK image smoke test measures 58 MB RSS idle. pynapoleon and aiohttp add about
   32 MB once signed in, so `memory_mb` is 128.
 
+## Assistant tools
+
+The hub's assistant (voice/chat, bdh-sdk 0.46+ `tools` / `run_tool`) can use the fireplaces the
+way the page can. Every tool is offered in every mode (guest, dashboard and owner), like the
+page; only `save_preset` differs, as on the page: owners save house presets, everyone else saves
+guest presets that go after 14 days. Each action tool takes an optional `fireplace` (an enum of
+the fireplace names; left out when the account has a single fireplace). Without it, `get_status`
+and turning off cover every fireplace, and the other tools ask "Which fireplace: A or B?".
+
+| Tool | Read-only | Params | Does |
+| --- | --- | --- | --- |
+| `get_status` | yes | `fireplace`? | "The Den fireplace is on: flame height 3 of 5, ...; heater off; ember bed orange, brightness 3 of 4; top light off; preset Campfire." |
+| `set_power` | no | `on` (bool, required), `fireplace`? | On/off; off without a name turns off every lit fireplace. |
+| `set_heat` | no | `heater` (off/low/high), `temperature` (18-23 °C), `eco`, `boost` (bool), `fireplace`? | Low/high turn the fireplace on; temperature, eco and boost need it on. |
+| `set_flames` | no | `height` (1-5), `orange`, `yellow` (0-4), `fireplace`? | Needs the fireplace on. |
+| `set_ember_bed` | no | `brightness` (0-4), `colour` (the page's swatches), `cycle` (bool), `fireplace`? | Lighting it turns the fireplace on. |
+| `set_top_light` | no | `on`, `colour`, `cycle`, `fireplace`? | Lighting it turns the fireplace on. |
+| `apply_preset` | no | `preset` (enum: the built-ins plus saved presets this mode sees), `fireplace`? | Turns the fireplace on with that look (never the heater). |
+| `save_preset` | no | `name` (1-24 chars), `fireplace`? | Saves the current flames and lights; needs the fireplace on. |
+
+Colours are the page's swatches by name: orange, red, amber, white, blue, cyan, purple and
+green; status reports the nearest one. Results are short sentences the assistant can read out,
+and failures (fireplace off or offline, cloud sign-in trouble, unknown names) come back as
+messages it can pass on. Deleting presets isn't a tool.
 ## Tests
 
 - Python: `manage.py test fireplace` inside the hub, run by the SDK's `app-ci.yml`. The tests use

@@ -8,6 +8,9 @@ spec = PluginSpec(
     status="fireplace.homepage.status",
     shortcuts="fireplace.homepage.shortcuts",
     run_shortcut="fireplace.homepage.run_shortcut",
+    # What the hub's assistant can ask and do: the page's controls, in every mode.
+    tools="fireplace.assistant.tools",
+    run_tool="fireplace.assistant.run_tool",
     tiles=(
         Tile("Fireplace", "fireplace_index", "fireplace/hub/icon.svg", section="lodge",
              subtitle="Flames, heat, ember bed & top light", order=15,
