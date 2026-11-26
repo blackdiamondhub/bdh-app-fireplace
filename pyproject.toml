@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdh-app-fireplace"
-version = "1.2.0b2"
+version = "1.2.0b3"
 description = "Black Diamond Hub app: Napoleon fireplaces through the Napoleon cloud (pynapoleon)"
 readme = "README.md"
 license = { text = "MIT" }
