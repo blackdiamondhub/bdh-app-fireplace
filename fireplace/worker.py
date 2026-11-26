@@ -59,11 +59,29 @@ def tick():
         log.exception("Fireplace poll failed")
 
 
+#: Check for expired guest presets this often, even if nobody opens the page.
+PRUNE_EVERY = 3600.0
+_pruned_at = None
+
+
+def prune():
+    global _pruned_at
+    now = cloud.clock()
+    if _pruned_at is not None and now - _pruned_at < PRUNE_EVERY:
+        return
+    _pruned_at = now
+    try:
+        service.prune_guest_looks()
+    except Exception:  # noqa: BLE001
+        log.exception("Pruning guest presets failed")
+
+
 def _loop():
     _wake.wait(START_DELAY)
     while True:
         _wake.clear()
         tick()
+        prune()
         a = service.age() or 0
         _wake.wait(max(1.0, service.poll_interval() - a))
 

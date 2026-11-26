@@ -98,13 +98,33 @@ body.fp-page{background:#0b0a09;overflow:hidden}
 .fp-sw button.fp-act{border-color:#fff;box-shadow:0 0 0 3px var(--gold)}
 .fp-sw input[type=color]{width:52px;height:44px;border:none;background:none;padding:0;cursor:pointer}
 
-.fp-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:12px}
-.fp-presets button{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 4px 10px;border-radius:12px;
+/* Built-ins, your own presets, then "Save preset": one row that scrolls sideways once it's full. */
+.fp-presets{display:flex;gap:12px;padding:12px;overflow-x:auto;scrollbar-width:none}
+.fp-presets::-webkit-scrollbar{display:none}
+.fp-mine{display:contents}
+.fp-presets button{position:relative;flex:1 0 150px;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 4px 10px;border-radius:12px;
   background:rgba(127,127,127,.1);border:1px solid rgba(127,127,127,.25);font-size:.9rem;font-weight:600;cursor:pointer;
   transition:background .15s,border-color .15s}
 .fp-presets button i{color:#ff9a3c;font-size:26px}
 .fp-presets button.fp-act{border-color:var(--gold);background:rgba(181,86,42,.3)}
 .fp-presets button:disabled{opacity:.4;cursor:not-allowed}
+.fp-ln{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 18px}
+.fp-del{position:absolute;top:2px;right:2px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;
+  border-radius:50%;color:var(--t2);font-size:.9rem}
+.fp-presets .fp-del i{font-size:18px;color:inherit}
+.fp-presets button.fp-confirm{border-color:#f44336;background:rgba(244,67,54,.2)}
+.fp-presets button.fp-confirm .fp-del{width:auto;height:auto;inset:0;border-radius:12px;background:#b3261e;color:#fff;font-weight:700}
+.fp-presets button.fp-confirm .fp-del i{display:none}
+.fp-presets button.fp-confirm .fp-del::after{content:"Delete?"}
+.fp-presets .fp-add{border-style:dashed}
+.fp-presets .fp-add i{color:var(--t2)}
+.fp-save{flex:none;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 12px 12px;padding:10px 16px;border-radius:10px;
+  background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2)}
+.fp-save input{flex:1 1 220px;min-width:0;height:52px;padding:0 14px;border-radius:10px;border:1px solid var(--line);
+  background:#0b0a09;color:var(--t);font:inherit}
+.fp-save button{height:52px;padding:0 22px;border-radius:10px;border:1px solid var(--line);background:transparent;font-weight:600;cursor:pointer}
+.fp-save .fp-ok{background:#b5562a;border-color:#b5562a;color:#fff}
+.fp-save small{flex-basis:100%;color:var(--t2);font-size:.8rem}
 
 .fp-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);z-index:10;max-width:80%;
   padding:12px 22px;border-radius:10px;background:#3a1714;border:1px solid rgba(244,67,54,.6);color:#ffd8d2;font-size:.95rem;
@@ -125,7 +145,8 @@ body.fp-page{background:#0b0a09;overflow:hidden}
   .fp-media{padding:0 10px}
   .fp-rl{width:96px}
   .fp-pair{grid-template-columns:minmax(0,1fr);row-gap:0}
-  .fp-presets{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .fp-presets{flex-wrap:wrap}
+  .fp-presets button{flex-basis:calc(50% - 6px)}
   .fp-puck{width:48px;height:48px;margin:-24px 0 0 -24px;font-size:20px}
   .fp-lb{top:52px}
   .fp-tabs{flex-wrap:wrap}

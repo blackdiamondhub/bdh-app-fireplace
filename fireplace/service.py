@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+import time
 
 from . import cloud
 from .cloud import AppError
@@ -52,8 +53,30 @@ LEVELS = {
     "orange": ("orange_flame", "set_orange_flame", FLAME_COLOUR),
     "yellow": ("yellow_flame", "set_yellow_flame", FLAME_COLOUR),
 }
-ACTIONS = ("power", "heater", "temp", "ember_bri", "ember_rgb", "top_on", "top_rgb", "favourite",
+ACTIONS = ("power", "heater", "temp", "ember_bri", "ember_rgb", "top_on", "top_rgb", "favourite", "look",
            *LEVELS, *FLAGS)
+
+#: A saved look: the flame and lights, never the heater. Model key -> FireplaceState field.
+LOOK_FIELDS = {
+    "flame_speed": "flame_speed",
+    "orange": "orange_flame",
+    "yellow": "yellow_flame",
+    # Cycling first: a colour is only kept once cycling is off.
+    "ember_cycle": "ember_bed_cycling",
+    "ember_rgb": "ember_bed_rgb",
+    "ember_bri": "ember_bed_brightness",
+    "top_cycle": "top_light_cycling",
+    "top_rgb": "top_light_rgb",
+}
+LOOK_SETTERS = {k: "set_" + f for k, f in LOOK_FIELDS.items()}
+LOOKS_KEY = "looks"  # app_state: [{"id", "name", "look": {...}}]
+#: Guests' presets live apart from the house's and go after GUEST_LOOK_DAYS.
+GUEST_LOOKS_KEY = "guest_looks"  # app_state: [{"id", "name", "look", "saved": unix seconds}]
+GUEST_LOOK_DAYS = 14
+MAX_LOOKS = 8
+MAX_LOOK_NAME = 24
+#: Wall clock for guest preset expiry (cloud.clock is monotonic).
+wall = time.time
 
 OFF_MESSAGE = "Turn the fireplace on first"
 
@@ -305,14 +328,14 @@ def fireplaces() -> list[dict]:
         return [_shape(e) for e in _entries.values()]
 
 
-def state(max_age: float = FAST_POLL) -> dict:
-    """``{configured, error, fireplaces}``, polling first if the snapshot is stale."""
+def state(max_age: float = FAST_POLL, guest: bool = False) -> dict:
+    """``{configured, error, fireplaces, looks}``, polling first if the snapshot is stale."""
     if not cloud.configured():
-        return {"configured": False, "error": None, "fireplaces": []}
+        return {"configured": False, "error": None, "fireplaces": [], "looks": []}
     ensure_fresh(max_age)
     with _lock:
         err = _error
-    return {"configured": True, "error": err, "fireplaces": fireplaces()}
+    return {"configured": True, "error": err, "fireplaces": fireplaces(), "looks": looks(guest), "guest": guest}
 
 
 # ── commands ──
@@ -358,7 +381,137 @@ def validate(action, value):
         if value not in FAVOURITE_IDS:
             raise Invalid("Unknown preset")
         return value
+    if action == "look":
+        found = next((s["look"] for s in looks(True) if s["id"] == value), None) if isinstance(value, str) else None
+        if found is None:
+            raise Invalid("That preset was deleted")
+        return found
     raise Invalid(f"Unknown action {action!r}")  # pragma: no cover
+
+
+# ── saved looks (your own presets) ──
+
+def _clean_look(look) -> dict:
+    """A stored look, checked field by field; raises Invalid."""
+    if not isinstance(look, dict):
+        raise Invalid("Bad preset")
+    out = {
+        "flame_speed": _int(look.get("flame_speed"), *FLAME_SPEED, "flame_speed"),
+        "orange": _int(look.get("orange"), *FLAME_COLOUR, "orange"),
+        "yellow": _int(look.get("yellow"), *FLAME_COLOUR, "yellow"),
+        "ember_cycle": _bool(look.get("ember_cycle"), "ember_cycle"),
+        "ember_rgb": None if look.get("ember_rgb") is None else list(_rgb_value(look["ember_rgb"], "ember_rgb")),
+        "ember_bri": _int(look.get("ember_bri"), 0, EMBER_MAX, "ember_bri"),
+        "top_cycle": _bool(look.get("top_cycle"), "top_cycle"),
+        "top_rgb": list(_rgb_value(look.get("top_rgb"), "top_rgb")),
+    }
+    return out
+
+
+def _stored(key) -> list[dict]:
+    """One folder of saved looks, oldest first. Malformed entries are skipped;
+    expired guest entries are skipped and dropped from storage."""
+    from bdh_sdk.storage import app_state
+
+    guest = key == GUEST_LOOKS_KEY
+    cutoff = wall() - GUEST_LOOK_DAYS * 86400
+    raw = app_state(APP).get(key) or []
+    out = []
+    expired = False
+    for item in raw:
+        try:
+            entry = {"id": str(item["id"]), "name": str(item["name"]), "look": _clean_look(item["look"])}
+            if guest:
+                entry["saved"] = float(item["saved"])
+                if entry["saved"] < cutoff:
+                    expired = True
+                    continue
+        except (Invalid, KeyError, TypeError, ValueError):
+            log.warning("Skipping a malformed saved look")
+            continue
+        out.append(entry)
+    if expired:
+        app_state(APP).set(key, out)
+    return out
+
+
+def prune_guest_looks() -> None:
+    """Drop guest presets older than GUEST_LOOK_DAYS (reading the folder does it)."""
+    _stored(GUEST_LOOKS_KEY)
+
+
+def looks(guest: bool = False) -> list[dict]:
+    """The presets a visitor sees, each with ``mine`` (they may replace or delete it).
+
+    The house's presets come first; guests see them too, read-only, followed by
+    the guest presets (which show when they go, as ``expires``)."""
+    house = [{"id": s["id"], "name": s["name"], "look": s["look"], "mine": not guest} for s in _stored(LOOKS_KEY)]
+    if not guest:
+        return house
+    ttl = GUEST_LOOK_DAYS * 86400
+    return house + [{"id": s["id"], "name": s["name"], "look": s["look"], "mine": True,
+                     "expires": int(s["saved"] + ttl)} for s in _stored(GUEST_LOOKS_KEY)]
+
+
+def _look_of(state) -> dict:
+    m = model(state)
+    look = {k: m[k] for k in LOOK_FIELDS}
+    look["top_rgb"] = m["top_rgb"] or [0, 0, 0]
+    return _clean_look(look)
+
+
+def save_look(dsn, name, guest: bool = False) -> list[dict]:
+    """Save fireplace ``dsn``'s current flame and lights as ``name`` (same name: replaced).
+
+    Guests save into their own folder, where presets go after GUEST_LOOK_DAYS;
+    they can't reuse a house preset's name. Returns ``looks(guest)``."""
+    import secrets as pysecrets
+
+    from bdh_sdk.storage import app_state
+
+    if not isinstance(name, str) or not name.strip():
+        raise Invalid("Give the preset a name")
+    name = " ".join(name.split())
+    if len(name) > MAX_LOOK_NAME:
+        raise Invalid(f"Keep the name to {MAX_LOOK_NAME} characters")
+    if name.casefold() in {n.casefold() for _, n in FAVOURITES}:
+        raise Invalid("That name is taken by a built-in preset")
+    if not isinstance(dsn, str) or not dsn:
+        raise Invalid("Missing fireplace id")
+    entry = _entry(dsn)
+    with _lock:
+        state = _effective(entry)
+    if not state.power:
+        raise IsOff(OFF_MESSAGE)
+    look = _look_of(state)
+    key = GUEST_LOOKS_KEY if guest else LOOKS_KEY
+    if guest and any(s["name"].casefold() == name.casefold() for s in _stored(LOOKS_KEY)):
+        raise Invalid("That name is taken by a house preset")
+    saved = _stored(key)
+    same = next((s for s in saved if s["name"].casefold() == name.casefold()), None)
+    if same:
+        same.update(name=name, look=look)
+        if guest:
+            same["saved"] = wall()
+    elif len(saved) >= MAX_LOOKS:
+        raise Invalid(f"You can save up to {MAX_LOOKS} presets; delete one first")
+    else:
+        saved.append({"id": pysecrets.token_hex(4), "name": name, "look": look, **({"saved": wall()} if guest else {})})
+    app_state(APP).set(key, saved)
+    return looks(guest)
+
+
+def delete_look(look_id, guest: bool = False) -> list[dict]:
+    """Delete one of your presets (guests can only delete guest presets)."""
+    from bdh_sdk.storage import app_state
+
+    key = GUEST_LOOKS_KEY if guest else LOOKS_KEY
+    saved = _stored(key)
+    kept = [s for s in saved if s["id"] != look_id]
+    if len(kept) == len(saved):
+        raise NotFound("That preset was already deleted")
+    app_state(APP).set(key, kept)
+    return looks(guest)
 
 
 def plan(state, action, value) -> list[tuple[str, object, str, object]]:
@@ -424,6 +577,19 @@ def plan(state, action, value) -> list[tuple[str, object, str, object]]:
         return power_on + [("set_top_light_rgb", value, "top_light_rgb", value)]
     if action == "favourite":
         return power_on + [("apply_favourite", value, "current_favourite", value)]
+    if action == "look":
+        # Only what differs, so a look that's already showing costs no cloud calls.
+        steps = list(power_on)
+        for key, field in LOOK_FIELDS.items():
+            want = value[key]
+            if want is None:
+                continue
+            have = getattr(state, field, None)
+            if key.endswith("_rgb"):
+                want, have = tuple(want), (tuple(have) if have is not None else None)
+            if have != want:
+                steps.append((LOOK_SETTERS[key], want, field, want))
+        return steps
     raise Invalid(f"Unknown action {action!r}")  # pragma: no cover
 
 
