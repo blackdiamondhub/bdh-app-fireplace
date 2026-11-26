@@ -881,6 +881,14 @@ class AssistantTests(Fresh, TestCase):
         with self.assertRaisesRegex(assistant.ToolError, "no fireplace called 'Patio'.*Living Room or Den"):
             assistant.run_tool("get_status", {"fireplace": "Patio"})
 
+    def test_names_that_end_in_fireplace(self):
+        # Seen at BDL: a fireplace named "Living Room Fireplace" was offered by name, then not found.
+        self.living.name = "Living Room Fireplace"
+        service.state(max_age=0)
+        self.assertEqual(self.ok("set_power", {"on": False, "fireplace": "Living Room Fireplace"}),
+                         "The Living Room Fireplace is off now.")
+        self.assertEqual(self.living.calls, [("set_power", False)])
+
     def test_set_power(self):
         self.assertEqual(self.ok("set_power", {"on": True, "fireplace": "Den"}), "The Den fireplace is on now.")
         self.assertEqual(self.den.calls, [("set_power", True)])
