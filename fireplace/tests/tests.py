@@ -12,7 +12,7 @@ from pynapoleon.models import FireplaceState
 from bdh_sdk import INFO, ON, WARN, secrets
 from bdh_sdk import settings as sdk_settings
 from bdh_sdk.testing import FakeBroker, assert_plugin_importable
-from fireplace import cloud, homepage, service, worker
+from fireplace import assistant, cloud, homepage, service, worker
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -801,3 +801,213 @@ class PhoneLayoutTests(SimpleTestCase):
     def test_has_phone_layout(self):
         css = (ROOT / "static/fireplace/fireplace.css").read_text(encoding="utf-8")
         self.assertIn("@media(max-width:700px)", css.replace(" ", ""))
+
+
+class AssistantTests(Fresh, TestCase):
+    """The assistant tools, called the way the hub calls them (FakeBroker sessions)."""
+
+    def setUp(self):
+        super().setUp()
+        from bdh_sdk import Stay
+        self.broker.stay = Stay(guest="Smith")  # a voice session during a stay is in guest mode
+        service.state()
+
+    def session(self, mode="guest"):
+        from bdh_sdk import tools as sdk_tools
+        self.broker.assistant_tools.clear()
+        for tool in assistant.tools(mode=mode):
+            self.broker.add_tool(tool, lambda args, t=tool.id: assistant.run_tool(t, args, mode=mode))
+        return sdk_tools.open_session()
+
+    def call(self, name, args=None):
+        from bdh_sdk import tools as sdk_tools
+        self.living.calls.clear()
+        self.den.calls.clear()
+        return sdk_tools.call_tool(self.session(), name, args)
+
+    def ok(self, name, args=None):
+        answer = self.call(name, args)
+        self.assertTrue(answer["ok"], answer)
+        return answer["result"]
+
+    def error(self, name, args=None):
+        answer = self.call(name, args)
+        self.assertFalse(answer["ok"], answer)
+        return answer["error"]
+
+    def test_every_mode_gets_every_tool(self):
+        from bdh_sdk import ALL_MODES
+        ids = ["get_status", "set_power", "set_heat", "set_flames", "set_ember_bed", "set_top_light",
+               "apply_preset", "save_preset"]
+        for mode in sorted(ALL_MODES):
+            with self.subTest(mode=mode):
+                tools = assistant.tools(mode=mode)
+                self.assertEqual([t.id for t in tools], ids)
+                self.assertTrue(all(t.modes == ALL_MODES for t in tools))
+                self.assertEqual([t.id for t in tools if t.readonly], ["get_status"])
+                for t in tools:
+                    self.assertEqual(t.params["properties"]["fireplace"]["enum"], ["Living Room", "Den"])
+                preset = next(t for t in tools if t.id == "apply_preset").params["properties"]["preset"]
+                self.assertEqual(preset["enum"], ["Party Time", "Campfire", "Summer Day", "Sunset"])
+
+    def test_one_fireplace_needs_no_name(self):
+        self.client.fps.remove(self.den)
+        service.state(max_age=0)
+        tools = assistant.tools(mode="guest")
+        self.assertTrue(all("fireplace" not in t.params["properties"] for t in tools))
+        self.assertEqual(self.ok("set_power", {"on": False}), "The fireplace is off now.")
+
+    def test_nothing_offered_without_an_account_or_fireplaces(self):
+        self.client.fps.clear()
+        service.state(max_age=0)
+        self.assertEqual(assistant.tools(mode="guest"), [])
+        secrets.delete("napoleon_password", app="fireplace")
+        self.assertEqual(assistant.tools(mode="guest"), [])
+        with self.assertRaisesRegex(assistant.ToolError, "isn't set up"):
+            assistant.run_tool("get_status", {})
+
+    def test_get_status(self):
+        self.assertEqual(self.ok("get_status"),
+                         "The Living Room fireplace is on: flame height 3 of 5, orange 2 of 4, yellow 2 of 4; "
+                         "heater off (thermostat set to 21°C); ember bed orange, brightness 3 of 4; top light off; "
+                         "preset Campfire. The Den fireplace is off.")
+        self.assertEqual(self.ok("get_status", {"fireplace": "Den"}), "The Den fireplace is off.")
+        self.assertIn("invalid arguments", self.error("get_status", {"fireplace": "Kitchen"}))
+        self.assertEqual(self.living.calls + self.den.calls, [])
+
+    def test_names_match_loosely(self):
+        self.assertEqual(assistant.run_tool("get_status", {"fireplace": "the den  fireplace"}),
+                         "The Den fireplace is off.")
+        with self.assertRaisesRegex(assistant.ToolError, "no fireplace called 'Patio'.*Living Room or Den"):
+            assistant.run_tool("get_status", {"fireplace": "Patio"})
+
+    def test_set_power(self):
+        self.assertEqual(self.ok("set_power", {"on": True, "fireplace": "Den"}), "The Den fireplace is on now.")
+        self.assertEqual(self.den.calls, [("set_power", True)])
+        self.assertEqual(self.ok("set_power", {"on": True, "fireplace": "Den"}), "The Den fireplace is already on.")
+        self.assertEqual(self.den.calls, [])
+        self.assertEqual(self.error("set_power", {"on": True}), "Which fireplace: Living Room or Den?")
+        self.assertEqual(self.ok("set_power", {"on": False}), "Turned off the Living Room and the Den fireplaces.")
+        self.assertEqual((self.living.calls, self.den.calls), ([("set_power", False)], [("set_power", False)]))
+        self.assertEqual(self.ok("set_power", {"on": False}), "The fireplaces are already off.")
+        self.assertIn("invalid arguments", self.error("set_power", {}))
+
+    def test_off_without_a_name_only_touches_lit_fireplaces(self):
+        self.assertEqual(self.ok("set_power", {"on": False}), "The Living Room fireplace is off now.")
+        self.assertEqual((self.living.calls, self.den.calls), ([("set_power", False)], []))
+
+    def test_set_heat(self):
+        self.assertEqual(self.ok("set_heat", {"fireplace": "Living Room", "heater": "high", "temperature": 22,
+                                              "boost": True}),
+                         "The Living Room fireplace: heater high, set to 22°C, boost on.")
+        self.assertEqual(self.living.calls, [("set_heater", 2), ("set_setpoint_c", 22), ("set_boost_mode", True)])
+        # Low/high heat turns an off fireplace on; a temperature alone needs it on.
+        self.assertEqual(self.ok("set_heat", {"fireplace": "Den", "heater": "low"}),
+                         "The Den fireplace: heater low, set to 21°C.")
+        self.assertEqual(self.den.calls, [("set_power", True), ("set_heater", 1)])
+        self.ok("set_power", {"on": False, "fireplace": "Den"})
+        self.assertEqual(self.error("set_heat", {"fireplace": "Den", "temperature": 20}),
+                         "The Den fireplace is off; turn it on first.")
+        self.assertEqual(self.error("set_heat", {"fireplace": "Den"}), "Nothing to change: say what to set.")
+        for args in ({"fireplace": "Den", "temperature": 30}, {"fireplace": "Den", "heater": "max"}):
+            with self.subTest(args=args):
+                self.assertIn("invalid arguments", self.error("set_heat", args))
+        self.assertEqual(self.den.calls, [])
+
+    def test_set_flames(self):
+        self.assertEqual(self.ok("set_flames", {"fireplace": "Living Room", "height": 5, "orange": 0}),
+                         "The Living Room fireplace: flame height 5 of 5, orange 0 of 4, yellow 2 of 4.")
+        self.assertEqual(self.living.calls, [("set_flame_speed", 5), ("set_orange_flame", 0)])
+        self.assertIn("invalid arguments", self.error("set_flames", {"fireplace": "Living Room", "height": 6}))
+        self.assertEqual(self.error("set_flames", {"fireplace": "Den", "height": 2}),
+                         "The Den fireplace is off; turn it on first.")
+
+    def test_set_ember_bed(self):
+        self.assertEqual(self.ok("set_ember_bed", {"fireplace": "Living Room", "colour": "blue", "brightness": 4}),
+                         "The Living Room fireplace: ember bed blue, brightness 4 of 4.")
+        self.assertEqual(self.living.calls, [("set_ember_bed_rgb", (58, 123, 255)), ("set_ember_bed_brightness", 4)])
+        self.assertEqual(self.ok("set_ember_bed", {"fireplace": "Living Room", "cycle": True}),
+                         "The Living Room fireplace: ember bed colour cycling, brightness 4 of 4.")
+        # A colour stops the cycling first, or it wouldn't stick.
+        self.ok("set_ember_bed", {"fireplace": "Living Room", "colour": "red"})
+        self.assertEqual(self.living.calls, [("set_ember_bed_cycling", False), ("set_ember_bed_rgb", (255, 42, 0))])
+        self.assertEqual(self.ok("set_ember_bed", {"fireplace": "Living Room", "brightness": 0}),
+                         "The Living Room fireplace: ember bed off.")
+        self.assertIn("invalid arguments", self.error("set_ember_bed", {"fireplace": "Den", "colour": "pink"}))
+
+    def test_set_top_light(self):
+        self.assertEqual(self.ok("set_top_light", {"fireplace": "Living Room", "on": True}),
+                         "The Living Room fireplace: top light white.")
+        self.assertEqual(self.living.calls, [("set_top_light_rgb", (255, 255, 255))])
+        self.assertEqual(self.ok("set_top_light", {"fireplace": "Living Room", "on": True, "colour": "green"}),
+                         "The Living Room fireplace: top light green.")
+        self.assertEqual(self.living.calls, [("set_top_light_rgb", (48, 224, 112))])
+        self.assertEqual(self.ok("set_top_light", {"fireplace": "Living Room", "on": False}),
+                         "The Living Room fireplace: top light off.")
+        # Lighting it lights an off fireplace too, like the page.
+        self.ok("set_top_light", {"fireplace": "Den", "colour": "purple"})
+        self.assertEqual(self.den.calls, [("set_power", True), ("set_top_light_rgb", (176, 64, 255))])
+
+    def test_apply_preset(self):
+        self.assertEqual(self.ok("apply_preset", {"fireplace": "Den", "preset": "Sunset"}),
+                         "The Den fireplace is showing the Sunset preset.")
+        self.assertEqual(self.den.calls, [("set_power", True), ("apply_favourite", "glowingsunset")])
+        self.assertIn("invalid arguments", self.error("apply_preset", {"fireplace": "Den", "preset": "Disco"}))
+        with self.assertRaisesRegex(assistant.ToolError, "no preset called 'Disco'.*Party Time, Campfire"):
+            assistant.run_tool("apply_preset", {"fireplace": "Den", "preset": "Disco"})
+
+    def test_saved_presets_follow_the_mode(self):
+        self.assertEqual(self.ok("save_preset", {"fireplace": "Living Room", "name": "Cozy"}),
+                         "Saved the look of the Living Room fireplace as the Cozy preset for 14 days.")
+        self.assertEqual(assistant.run_tool("save_preset", {"fireplace": "Living Room", "name": "House"},
+                                            mode="owner"),
+                         "Saved the look of the Living Room fireplace as the House preset.")
+        self.assertEqual([(s["name"], "expires" in s) for s in service.looks(True)], [("House", False), ("Cozy", True)])
+
+        def presets(mode):
+            tool = next(t for t in assistant.tools(mode=mode) if t.id == "apply_preset")
+            return tool.params["properties"]["preset"]["enum"][4:]
+        # Guests (and the dashboard) see their presets too; owners only the house's, as on the page.
+        self.assertEqual((presets("guest"), presets("dashboard"), presets("owner")),
+                         (["House", "Cozy"], ["House", "Cozy"], ["House"]))
+        self.assertIn("14 days", next(t for t in assistant.tools(mode="guest") if t.id == "save_preset").description)
+        self.assertIn("house preset", next(t for t in assistant.tools(mode="owner") if t.id == "save_preset").description)
+        with self.assertRaisesRegex(assistant.ToolError, "no preset called 'Cozy'"):
+            assistant.run_tool("apply_preset", {"fireplace": "Den", "preset": "Cozy"}, mode="owner")
+        self.assertEqual(self.ok("apply_preset", {"fireplace": "Den", "preset": "Cozy"}),
+                         "The Den fireplace is showing the Cozy preset.")
+        self.assertEqual(self.den.calls[0], ("set_power", True))
+        self.assertEqual(self.error("save_preset", {"fireplace": "Living Room", "name": "Sunset"}),
+                         "That name is taken by a built-in preset")
+
+    def test_save_preset_needs_the_fireplace_on(self):
+        self.assertEqual(self.error("save_preset", {"fireplace": "Den", "name": "Cozy"}),
+                         "The Den fireplace is off; turn it on first.")
+
+    def test_offline_fireplace(self):
+        self.client.status[DEN] = "Offline"
+        service.state(max_age=0)
+        self.assertEqual(self.error("set_power", {"on": True, "fireplace": "Den"}),
+                         "The Den fireplace is offline right now.")
+        self.assertEqual(self.ok("get_status", {"fireplace": "Den"}), "The Den fireplace is offline.")
+
+    def test_cloud_trouble_is_reported(self):
+        cloud.reset()
+        service.reset()
+        self.bad_password = True
+        tools = assistant.tools(mode="guest")
+        self.assertEqual(len(tools), 8)
+        self.assertNotIn("enum", tools[0].params["properties"]["fireplace"])
+        self.assertEqual(self.error("get_status"), cloud.AUTH_MESSAGE)
+        self.assertEqual(self.error("set_power", {"on": False}), cloud.AUTH_MESSAGE)
+
+    def test_hooks_serialise(self):
+        from bdh_sdk import hooks
+        from fireplace.plugin import spec
+        listed = hooks.run(spec, "tools", mode="guest")
+        self.assertEqual(len(listed), 8)
+        json.dumps(listed)
+        self.assertEqual(hooks.run(spec, "run_tool", tool_id="get_status", args={"fireplace": "Den"}, mode="guest"),
+                         "The Den fireplace is off.")
+        with self.assertRaises(assistant.ToolError):
+            hooks.run(spec, "run_tool", tool_id="nope", args={}, mode="guest")
